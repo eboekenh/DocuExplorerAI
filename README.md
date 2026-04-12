@@ -119,4 +119,4 @@ docuweb-app/
 
 ## License
 
-MIT
+**Proprietary — Source-Available.** This code is shared for viewing and evaluation purposes only. Copying, modifying, distributing, or commercial use is not permitted without written permission. See [LICENSE](LICENSE) for details.
