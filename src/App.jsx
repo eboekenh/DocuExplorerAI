@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { supabase } from './supabaseClient.js';
 import { 
   Upload, 
   FileText, 
@@ -11,7 +12,14 @@ import {
   Info,
   Globe,
   Download,
-  FolderOpen
+  FolderOpen,
+  LogOut,
+  Save,
+  Cloud,
+  CloudOff,
+  History,
+  Trash2,
+  Plus
 } from 'lucide-react';
 
 // --- YARDIMCI FONKSİYONLAR ---
@@ -156,56 +164,126 @@ const translations = {
   }
 };
 
-// Gemini API Çağrısı (Exponential Backoff ile)
-const callGemini = async (prompt, langCode = 'tr') => {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-  if (!apiKey) {
-    return { text: "API anahtarı bulunamadı. .env dosyasını kontrol edin.", sources: [] };
-  }
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+// --- AI PROVIDER SİSTEMİ (Fallback Destekli) ---
 
+// Gemini API çağrısı
+const callGemini = async (prompt, systemPromptText) => {
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  if (!apiKey) return null;
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+  const payload = {
+    contents: [{ parts: [{ text: prompt }] }],
+    systemInstruction: { parts: [{ text: systemPromptText }] },
+    tools: [{ google_search: {} }]
+  };
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+
+  if (response.status === 429) return null; // Kota doldu → fallback'e geç
+  if (!response.ok) throw new Error(`Gemini HTTP ${response.status}`);
+
+  const data = await response.json();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "Yanıt alınamadı.";
+
+  const attributions = data.candidates?.[0]?.groundingMetadata?.groundingAttributions || [];
+  const extractedSources = attributions
+    .map(a => a.web)
+    .filter(web => web && web.uri && web.title)
+    .map(web => ({ uri: web.uri, title: web.title }));
+  const uniqueSources = Array.from(new Map(extractedSources.map(item => [item.uri, item])).values());
+
+  return { text, sources: uniqueSources };
+};
+
+// OpenAI-uyumlu API çağrısı (DeepSeek, Groq, Ollama vb.)
+const callOpenAICompatible = async (prompt, systemPromptText, baseUrl, apiKey, model) => {
+  if (!apiKey && !baseUrl.includes('localhost')) return null;
+
+  const headers = { 'Content-Type': 'application/json' };
+  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: 'system', content: systemPromptText },
+        { role: 'user', content: prompt }
+      ],
+      temperature: 0.7,
+      max_tokens: 2048
+    })
+  });
+
+  if (response.status === 429) return null;
+  if (!response.ok) throw new Error(`${model} HTTP ${response.status}`);
+
+  const data = await response.json();
+  const text = data.choices?.[0]?.message?.content || "Yanıt alınamadı.";
+  return { text, sources: [] };
+};
+
+// HuggingFace Inference API çağrısı (Llama 3.3 70B via Together)
+const callHuggingFace = async (prompt, systemPromptText) => {
+  const apiKey = import.meta.env.VITE_HF_API_KEY;
+  if (!apiKey) return null;
+
+  const response = await fetch(
+    'https://router.huggingface.co/together/v1/chat/completions',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
+        messages: [
+          { role: 'system', content: systemPromptText },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.7,
+        max_tokens: 2048
+      })
+    }
+  );
+
+  if (response.status === 429 || response.status === 503) return null;
+  if (!response.ok) throw new Error(`HuggingFace HTTP ${response.status}`);
+
+  const data = await response.json();
+  const text = data.choices?.[0]?.message?.content || "Yanıt alınamadı.";
+  return { text, sources: [] };
+};
+
+// Ana AI çağrı fonksiyonu — sırayla dener, ilk çalışanı kullanır
+const callAI = async (prompt, langCode = 'tr') => {
   const langName = translations[langCode].langName;
   const systemPromptText = translations[langCode].aiSystem.replace("{LANG}", langName);
 
-  const payload = {
-    contents: [{ parts: [{ text: prompt }] }],
-    systemInstruction: { 
-      parts: [{ text: systemPromptText }] 
-    },
-    tools: [{ google_search: {} }] // Google Arama ve Kaynak Bulma Aracı Aktifleştirildi
-  };
+  const providers = [
+    // 1. Gemini (birincil)
+    () => callGemini(prompt, systemPromptText),
+    // 2. HuggingFace (ücretsiz, Llama 3.3 70B)
+    () => callHuggingFace(prompt, systemPromptText),
+  ];
 
-  const retries = 5;
-  const delays = [1000, 2000, 4000, 8000, 16000];
-
-  for (let i = 0; i < retries; i++) {
+  for (const provider of providers) {
     try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      if (!response.ok) throw new Error(`HTTP hatası! status: ${response.status}`);
-      const data = await response.json();
-      
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "Yanıt alınamadı.";
-      
-      // Kaynakları (Grounding sources) çıkart ve düzenle
-      const attributions = data.candidates?.[0]?.groundingMetadata?.groundingAttributions || [];
-      const extractedSources = attributions
-        .map(a => a.web)
-        .filter(web => web && web.uri && web.title)
-        .map(web => ({ uri: web.uri, title: web.title }));
-      
-      // Aynı URL'ye sahip olan kaynakları teke düşür
-      const uniqueSources = Array.from(new Map(extractedSources.map(item => [item.uri, item])).values());
-
-      return { text, sources: uniqueSources };
-    } catch (error) {
-      if (i === retries - 1) throw error;
-      await new Promise(res => setTimeout(res, delays[i]));
+      const result = await provider();
+      if (result) return result;
+    } catch (err) {
+      console.warn('Provider hatası, sonrakine geçiliyor:', err.message);
     }
   }
+
+  return { text: "Tüm AI servisleri şu anda kullanılamıyor. Lütfen daha sonra tekrar deneyin.", sources: [] };
 };
 
 // Seçilen metnin asıl paragraf içindeki başlangıç/bitiş indislerini hesaplar
@@ -240,7 +318,157 @@ export default function App() {
   const [questionInput, setQuestionInput] = useState('');
   const [isReadingFile, setIsReadingFile] = useState(false);
   const [errorMsg, setErrorMsg] = useState(null);
+  const [saveStatus, setSaveStatus] = useState('idle'); // 'idle' | 'saving' | 'saved' | 'error'
+  const [sessionId, setSessionId] = useState(null);
+  const [sessionList, setSessionList] = useState([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const menuRef = useRef(null);
+  const saveTimeoutRef = useRef(null);
+
+  // --- Supabase: Oturum Yükleme ---
+  useEffect(() => {
+    const loadSession = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      const { data, error } = await supabase
+        .from('sessions')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('updated_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (data && !error) {
+        setSessionId(data.id);
+        setDocumentTitle(data.document_title || '');
+        setParagraphs(data.paragraphs || []);
+        setAnnotations(data.annotations || {});
+        setLang(data.lang || 'tr');
+      }
+    };
+    loadSession();
+  }, []);
+
+  // --- Supabase: Otomatik Kaydetme ---
+  const saveToSupabase = useCallback(async (title, paras, anns, currentLang) => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    setSaveStatus('saving');
+    try {
+      const payload = {
+        user_id: user.id,
+        document_title: title,
+        paragraphs: paras,
+        annotations: anns,
+        lang: currentLang,
+        updated_at: new Date().toISOString()
+      };
+
+      if (sessionId) {
+        const { error } = await supabase
+          .from('sessions')
+          .update(payload)
+          .eq('id', sessionId);
+        if (error) throw error;
+      } else {
+        const { data, error } = await supabase
+          .from('sessions')
+          .insert(payload)
+          .select('id')
+          .single();
+        if (error) throw error;
+        if (data) setSessionId(data.id);
+      }
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus('idle'), 2000);
+    } catch (err) {
+      console.error('Save error:', err);
+      setSaveStatus('error');
+    }
+  }, [sessionId]);
+
+  // Debounced auto-save: her değişiklikten 2 saniye sonra kaydet
+  useEffect(() => {
+    if (!documentTitle && paragraphs.length === 0) return;
+
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(() => {
+      saveToSupabase(documentTitle, paragraphs, annotations, lang);
+    }, 2000);
+
+    return () => {
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    };
+  }, [documentTitle, paragraphs, annotations, lang, saveToSupabase]);
+
+  // --- Döküman Geçmişi: Listeyi Yükle ---
+  const loadSessionList = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+    setLoadingHistory(true);
+    const { data, error } = await supabase
+      .from('sessions')
+      .select('id, document_title, updated_at, lang')
+      .eq('user_id', user.id)
+      .order('updated_at', { ascending: false });
+    if (data && !error) setSessionList(data);
+    setLoadingHistory(false);
+  };
+
+  // Geçmiş paneli açıldığında listeyi yükle
+  useEffect(() => {
+    if (showHistory) loadSessionList();
+  }, [showHistory]);
+
+  // --- Döküman Geçmişi: Oturum Yükle ---
+  const loadSessionById = async (id) => {
+    const { data, error } = await supabase
+      .from('sessions')
+      .select('*')
+      .eq('id', id)
+      .single();
+    if (data && !error) {
+      setSessionId(data.id);
+      setDocumentTitle(data.document_title || '');
+      setParagraphs(data.paragraphs || []);
+      setAnnotations(data.annotations || {});
+      setLang(data.lang || 'tr');
+      setShowHistory(false);
+    }
+  };
+
+  // --- Döküman Geçmişi: Oturum Sil ---
+  const deleteSession = async (id) => {
+    const { error } = await supabase.from('sessions').delete().eq('id', id);
+    if (!error) {
+      setSessionList(prev => prev.filter(s => s.id !== id));
+      if (sessionId === id) {
+        setSessionId(null);
+        setDocumentTitle('');
+        setParagraphs([]);
+        setAnnotations({});
+      }
+    }
+  };
+
+  // --- Yeni Belge ---
+  const handleNewDocument = () => {
+    setSessionId(null);
+    setDocumentTitle('');
+    setParagraphs([]);
+    setAnnotations({});
+    setErrorMsg(null);
+    setShowHistory(false);
+  };
+
+  // --- Çıkış Yap ---
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    window.location.reload();
+  };
 
   // Oturumu Dışa Aktar (Export)
   const handleExport = () => {
@@ -510,7 +738,7 @@ export default function App() {
     
     // Dil parametresi API fonksiyonuna gönderiliyor
     try {
-      const result = await callGemini(prompt, lang);
+      const result = await callAI(prompt, lang);
 
       setAnnotations(prev => {
         const paragraphAnns = prev[paragraphId] || [];
@@ -682,6 +910,13 @@ export default function App() {
           </div>
           
           <div className="flex items-center gap-2 sm:gap-4">
+            {/* Kaydetme Durumu */}
+            <div className="flex items-center gap-1.5 text-xs font-medium">
+              {saveStatus === 'saving' && <><Loader2 size={14} className="animate-spin text-indigo-500" /><span className="text-slate-400 hidden sm:inline">Kaydediliyor...</span></>}
+              {saveStatus === 'saved' && <><Cloud size={14} className="text-green-500" /><span className="text-green-500 hidden sm:inline">Kaydedildi</span></>}
+              {saveStatus === 'error' && <><CloudOff size={14} className="text-red-500" /><span className="text-red-400 hidden sm:inline">Hata</span></>}
+            </div>
+
             {/* Dil Seçici Dropdown */}
             <div className="relative group">
               <button className="flex items-center gap-1 text-sm font-bold text-slate-600 hover:text-indigo-600 transition-colors cursor-pointer p-2 rounded-lg hover:bg-slate-50">
@@ -715,17 +950,90 @@ export default function App() {
 
                 {/* Yeni Belge Butonu */}
                 <button 
-                  onClick={() => { setParagraphs([]); setDocumentTitle(''); setAnnotations({}); setErrorMsg(null); }}
+                  onClick={handleNewDocument}
                   className="text-sm font-medium text-slate-500 hover:text-red-600 transition-colors flex items-center gap-1.5 bg-slate-100 hover:bg-red-50 px-3 py-1.5 rounded-lg"
                 >
-                  <X size={16} />
+                  <Plus size={16} />
                   <span className="hidden sm:inline">{t.newDoc}</span>
                 </button>
               </>
             )}
+
+            {/* Döküman Geçmişi Butonu */}
+            <button
+              onClick={() => setShowHistory(prev => !prev)}
+              className={`text-sm font-medium transition-colors flex items-center gap-1.5 p-2 rounded-lg ${showHistory ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'}`}
+              title="Döküman Geçmişi"
+            >
+              <History size={16} />
+            </button>
+
+            {/* Çıkış Yap Butonu */}
+            <button
+              onClick={handleLogout}
+              className="text-sm font-medium text-slate-400 hover:text-red-500 transition-colors flex items-center gap-1.5 p-2 rounded-lg hover:bg-red-50"
+              title="Çıkış Yap"
+            >
+              <LogOut size={16} />
+            </button>
           </div>
         </div>
       </header>
+
+      {/* Döküman Geçmişi Paneli */}
+      {showHistory && (
+        <div className="bg-white border-b border-slate-200 shadow-sm animate-in slide-in-from-top-2 fade-in duration-200">
+          <div className="max-w-5xl mx-auto px-4 py-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2">
+                <History size={16} className="text-indigo-500" />
+                Döküman Geçmişi
+              </h3>
+              <button onClick={() => setShowHistory(false)} className="text-slate-400 hover:text-slate-600 p-1 rounded">
+                <X size={16} />
+              </button>
+            </div>
+            
+            {loadingHistory ? (
+              <div className="flex items-center gap-2 text-slate-400 text-sm py-4 justify-center">
+                <Loader2 size={16} className="animate-spin" /> Yükleniyor...
+              </div>
+            ) : sessionList.length === 0 ? (
+              <p className="text-sm text-slate-400 py-4 text-center">Henüz kaydedilmiş döküman yok.</p>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-64 overflow-y-auto">
+                {sessionList.map((s) => (
+                  <div
+                    key={s.id}
+                    className={`group flex items-center justify-between gap-2 p-3 rounded-xl border cursor-pointer transition-all ${
+                      sessionId === s.id
+                        ? 'bg-indigo-50 border-indigo-200 text-indigo-700'
+                        : 'bg-slate-50 border-slate-100 hover:bg-indigo-50 hover:border-indigo-100 text-slate-700'
+                    }`}
+                    onClick={() => loadSessionById(s.id)}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold truncate">
+                        {s.document_title || 'İsimsiz Belge'}
+                      </p>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        {new Date(s.updated_at).toLocaleDateString('tr-TR', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                      </p>
+                    </div>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
+                      className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition-all p-1 rounded"
+                      title="Sil"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       <main className="max-w-4xl mx-auto px-4 py-8 pb-32">
         
