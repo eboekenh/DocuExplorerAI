@@ -1,6 +1,6 @@
 # DocuWeb Explorer
 
-An interactive document reader with AI-powered inline annotations. Upload any document and learn without losing context — select text, ask questions, and get AI explanations embedded directly within the document.
+An interactive document reader with AI-powered inline annotations. Upload any document and learn without losing context. Select text, ask questions, and get AI explanations embedded directly within the document.
 
 **Live Demo:** [https://docuweb-app.vercel.app](https://docuweb-app.vercel.app)
 
