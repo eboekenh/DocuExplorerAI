@@ -55,6 +55,11 @@ const translations = {
     subtitle: "Metni Yaşayan Bir Web Sitesine Çevir",
     newDoc: "Yeni Belge",
     exportBtn: "Dışa Aktar",
+    exportNotes: "Notları Dışa Aktar",
+    exportSession: "Oturumu Dışa Aktar", 
+    exportNotesMarkdown: "Notlar (Markdown)",
+    exportNotesHtml: "Notlar (HTML)",
+    exportNotesJson: "Notlar (JSON)",
     importBtn: "İçe Aktar",
     importErr: "Geçersiz veya bozuk oturum dosyası.",
     uploadTitle: "Okunacak Belgeyi Yükle",
@@ -116,6 +121,11 @@ const translations = {
     subtitle: "Turn Text into a Living Website",
     newDoc: "New Document",
     exportBtn: "Export",
+    exportNotes: "Export Notes",
+    exportSession: "Export Session",
+    exportNotesMarkdown: "Notes (Markdown)", 
+    exportNotesHtml: "Notes (HTML)",
+    exportNotesJson: "Notes (JSON)",
     importBtn: "Import",
     importErr: "Invalid or corrupted session file.",
     uploadTitle: "Upload Document to Read",
@@ -176,7 +186,12 @@ const translations = {
   de: {
     subtitle: "Verwandle Text in eine lebendige Website",
     newDoc: "Neues Dokument",
-    exportBtn: "Exportieren",
+    exportBtn: "Exportieren", 
+    exportNotes: "Notizen Exportieren",
+    exportSession: "Sitzung Exportieren",
+    exportNotesMarkdown: "Notizen (Markdown)",
+    exportNotesHtml: "Notizen (HTML)",
+    exportNotesJson: "Notizen (JSON)",
     importBtn: "Importieren",
     importErr: "Ungültige oder beschädigte Sitzungsdatei.",
     uploadTitle: "Dokument zum Lesen hochladen",
@@ -467,6 +482,49 @@ const getAbsoluteOffset = (container, targetNode, targetOffset) => {
 // Benzersiz ID oluşturucu
 const generateId = () => Math.random().toString(36).substring(2, 9);
 
+// Düz metinde tablo algılama fonksiyonu
+const detectTableInText = (text) => {
+  // Almanca tablo başlıkları veya tipik tablo yapıları arayalım
+  const tablePatterns = [
+    /Hersteller.*Hauptvorteil.*Preis/i,
+    /\|.*\|.*\|/,
+    /─{3,}/,
+    /\s{4,}/,
+    /^\s*\w+\s+\w+\s+\w+\s*$/m
+  ];
+  
+  const hasMultipleColumns = text.split('\n').some(line => 
+    line.includes('\t') || 
+    line.split(/\s{2,}/).length >= 3 ||
+    line.includes('|')
+  );
+  
+  return tablePatterns.some(pattern => pattern.test(text)) || hasMultipleColumns;
+};
+
+// Metin tablosunu HTML'e çevirme fonksiyonu
+const convertTextToTable = (text) => {
+  const lines = text.split('\n').filter(line => line.trim());
+  if (lines.length < 2) return null;
+  
+  let html = '<table>';
+  
+  lines.forEach((line, index) => {
+    const cells = line.split(/\t|\s{2,}|\|/).filter(cell => cell.trim());
+    if (cells.length < 2) return;
+    
+    html += '<tr>';
+    cells.forEach(cell => {
+      const tag = index === 0 ? 'th' : 'td'; // İlk satır başlık
+      html += `<${tag}>${cell.trim()}</${tag}>`;
+    });
+    html += '</tr>';
+  });
+  
+  html += '</table>';
+  return html;
+};
+
 // --- ANA BİLEŞEN ---
 
 export default function App({ isGuestMode = false }) {
@@ -487,6 +545,7 @@ export default function App({ isGuestMode = false }) {
   const [sessionList, setSessionList] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
   
   // Sidebar state
   const [showSidebar, setShowSidebar] = useState(window.innerWidth >= 768); // Show by default on desktop
@@ -592,6 +651,18 @@ export default function App({ isGuestMode = false }) {
   
   const menuRef = useRef(null);
   const saveTimeoutRef = useRef(null);
+
+  // Export menu'yu kapatmak için click outside handler
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (showExportMenu && !event.target.closest('.relative')) {
+        setShowExportMenu(false);
+      }
+    };
+    
+    document.addEventListener('click', handleClickOutside);
+    return () => document.removeEventListener('click', handleClickOutside);
+  }, [showExportMenu]);
 
   // --- Supabase: Oturum Yükleme ---
   useEffect(() => {
@@ -795,6 +866,137 @@ export default function App({ isGuestMode = false }) {
     URL.revokeObjectURL(url);
   };
 
+  // Notları Farklı Formatlarda Export Et
+  const exportNotes = (format) => {
+    const allNotes = [];
+    Object.keys(annotations).forEach(paragraphId => {
+      annotations[paragraphId].forEach(ann => {
+        const paragraph = paragraphs.find(p => p.id === paragraphId);
+        allNotes.push({
+          paragraphText: paragraph?.text || '',
+          selectedText: ann.text,
+          question: ann.question,
+          answer: ann.answer,
+          sources: ann.sources || []
+        });
+      });
+    });
+
+    if (allNotes.length === 0) {
+      alert(lang === 'tr' ? 'Henüz not eklenmemiş!' : lang === 'de' ? 'Noch keine Notizen hinzugefügt!' : 'No notes added yet!');
+      return;
+    }
+
+    let content, mimeType, extension;
+
+    switch (format) {
+      case 'markdown':
+        content = generateMarkdownNotes(allNotes);
+        mimeType = 'text/markdown';
+        extension = 'md';
+        break;
+      case 'html':
+        content = generateHtmlNotes(allNotes);
+        mimeType = 'text/html';
+        extension = 'html';
+        break;
+      case 'json':
+        content = JSON.stringify(allNotes, null, 2);
+        mimeType = 'application/json';
+        extension = 'json';
+        break;
+      default:
+        return;
+    }
+
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${documentTitle || 'docuweb'}-notes.${extension}`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Markdown formatında not oluştur
+  const generateMarkdownNotes = (notes) => {
+    let markdown = `# ${documentTitle || 'DocuWeb'} - Notlar\n\n`;
+    markdown += `*${new Date().toLocaleDateString()} tarihinde oluşturuldu*\n\n`;
+    
+    notes.forEach((note, index) => {
+      markdown += `## Not ${index + 1}\n\n`;
+      markdown += `**Seçilen Metin:** "${note.selectedText}"\n\n`;
+      markdown += `**Soru:** ${note.question}\n\n`;
+      markdown += `**Cevap:**\n${note.answer}\n\n`;
+      if (note.sources && note.sources.length > 0) {
+        markdown += `**Kaynaklar:**\n`;
+        note.sources.forEach(source => {
+          markdown += `- [${source.title}](${source.url})\n`;
+        });
+        markdown += '\n';
+      }
+      markdown += `---\n\n`;
+    });
+    
+    return markdown;
+  };
+
+  // HTML formatında not oluştur
+  const generateHtmlNotes = (notes) => {
+    let html = `<!DOCTYPE html>
+<html lang="${lang}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${documentTitle || 'DocuWeb'} - Notlar</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.6; }
+        .note { border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin: 20px 0; background: #f8fafc; }
+        .selected-text { background: #fef3cd; padding: 4px 8px; border-radius: 4px; font-weight: 600; }
+        .question { color: #374151; font-weight: 600; margin: 15px 0 10px 0; }
+        .answer { background: white; padding: 15px; border-radius: 6px; border-left: 4px solid #3b82f6; }
+        .sources { margin-top: 15px; }
+        .sources a { color: #3b82f6; text-decoration: none; }
+        .sources a:hover { text-decoration: underline; }
+        h1 { color: #1f2937; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px; }
+        .meta { color: #6b7280; font-style: italic; margin-bottom: 30px; }
+    </style>
+</head>
+<body>
+    <h1>${documentTitle || 'DocuWeb'} - Notlar</h1>
+    <p class="meta">${new Date().toLocaleDateString()} tarihinde oluşturuldu</p>
+`;
+
+    notes.forEach((note, index) => {
+      html += `
+    <div class="note">
+        <h3>Not ${index + 1}</h3>
+        <p><strong>Seçilen Metin:</strong> <span class="selected-text">"${note.selectedText}"</span></p>
+        <div class="question">Soru: ${note.question}</div>
+        <div class="answer">${note.answer.replace(/\n/g, '<br>')}</div>
+`;
+      if (note.sources && note.sources.length > 0) {
+        html += `        <div class="sources">
+            <strong>Kaynaklar:</strong><br>
+`;
+        note.sources.forEach(source => {
+          html += `            <a href="${source.url}" target="_blank">${source.title}</a><br>
+`;
+        });
+        html += `        </div>
+`;
+      }
+      html += `    </div>
+`;
+    });
+
+    html += `
+</body>
+</html>`;
+    
+    return html;
+  };
+
   // Oturumu İçe Aktar (Import)
   const handleImport = (e) => {
     const file = e.target.files[0];
@@ -909,6 +1111,7 @@ export default function App({ isGuestMode = false }) {
         const arrayBuffer = await file.arrayBuffer();
         const result = await window.mammoth.convertToHtml({ arrayBuffer }); 
         const html = result.value;
+        console.log('Mammoth HTML output:', html); // Debug için
         
         const parser = new DOMParser();
         const doc = parser.parseFromString(html, 'text/html');
@@ -918,7 +1121,35 @@ export default function App({ isGuestMode = false }) {
                 const tag = node.tagName.toLowerCase();
                 if (['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'li'].includes(tag)) {
                     const text = node.textContent.trim();
-                    if (text) parsedParagraphs.push({ id: generateId(), type: tag, text });
+                    if (text) {
+                        // Düz metinde tablo pattern'i var mı kontrol et
+                        if (detectTableInText(text)) {
+                            console.log('Table detected in text:', text);
+                            const tableHtml = convertTextToTable(text);
+                            if (tableHtml) {
+                                parsedParagraphs.push({ 
+                                    id: generateId(), 
+                                    type: 'table', 
+                                    text: '', 
+                                    html: tableHtml 
+                                });
+                                return;
+                            }
+                        }
+                        parsedParagraphs.push({ id: generateId(), type: tag, text });
+                    }
+                } else if (tag === 'table') {
+                    console.log('Table element found:', node.outerHTML); // Debug için
+                    // Tablo elementini HTML olarak koruyalım
+                    const tableHtml = node.outerHTML;
+                    if (tableHtml.trim()) {
+                        parsedParagraphs.push({ 
+                            id: generateId(), 
+                            type: 'table', 
+                            text: '', // Boş metin
+                            html: tableHtml // Ham HTML'i saklayalım
+                        });
+                    }
                 } else {
                     node.childNodes.forEach(walk);
                 }
@@ -935,10 +1166,24 @@ export default function App({ isGuestMode = false }) {
         const xmlDoc = parser.parseFromString(contentXml, "text/xml");
         
         const elements = Array.from(xmlDoc.getElementsByTagName("*")).filter(el => 
-            el.nodeName === 'text:h' || el.nodeName === 'text:p'
+            el.nodeName === 'text:h' || el.nodeName === 'text:p' || el.nodeName === 'table:table'
         );
         
         elements.forEach(el => {
+            if (el.nodeName === 'table:table') {
+                // ODT tablosunu HTML'e çevir
+                const tableHtml = convertOdtTableToHtml(el);
+                if (tableHtml.trim()) {
+                    parsedParagraphs.push({ 
+                        id: generateId(), 
+                        type: 'table', 
+                        text: '', 
+                        html: tableHtml 
+                    });
+                }
+                return;
+            }
+            
             const textContent = el.textContent.trim();
             if (!textContent) return;
             let type = 'p';
@@ -950,6 +1195,27 @@ export default function App({ isGuestMode = false }) {
             }
             parsedParagraphs.push({ id: generateId(), type, text: textContent });
         });
+        
+        // ODT tablosunu HTML'e çevirme fonksiyonu
+        function convertOdtTableToHtml(tableEl) {
+            let html = '<table>';
+            
+            const rows = Array.from(tableEl.getElementsByTagName('table:table-row'));
+            rows.forEach((row, rowIndex) => {
+                html += '<tr>';
+                const cells = Array.from(row.getElementsByTagName('table:table-cell'));
+                cells.forEach(cell => {
+                    const isHeader = rowIndex === 0; // İlk satırı başlık olarak kabul et
+                    const tag = isHeader ? 'th' : 'td';
+                    const text = cell.textContent.trim() || '';
+                    html += `<${tag}>${text}</${tag}>`;
+                });
+                html += '</tr>';
+            });
+            
+            html += '</table>';
+            return html;
+        }
       } else {
         setErrorMsg(t.errType);
         setIsReadingFile(false);
@@ -1208,6 +1474,19 @@ export default function App({ isGuestMode = false }) {
   const renderParagraph = (paragraph) => {
     const paragraphAnns = annotations[paragraph.id] || [];
     
+    // Tablo elementini özel olarak işle
+    if (paragraph.type === 'table') {
+      return (
+        <div 
+          className="table-container my-4 overflow-x-auto border border-slate-200 rounded-lg"
+          dangerouslySetInnerHTML={{ __html: paragraph.html }}
+          style={{
+            maxWidth: '100%',
+          }}
+        />
+      );
+    }
+    
     if (paragraphAnns.length === 0) {
       return <span>{paragraph.text}</span>;
     }
@@ -1411,14 +1690,78 @@ export default function App({ isGuestMode = false }) {
 
             {paragraphs.length > 0 && (
               <>
-                {/* Dışa Aktar Butonu (Sadece doküman varken) */}
-                <button 
-                  onClick={handleExport}
-                  className="text-sm font-medium text-slate-600 hover:text-indigo-600 transition-colors flex items-center gap-1.5 bg-white hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 px-3 py-1.5 rounded-lg shadow-sm"
-                >
-                  <Download size={16} />
-                  <span className="hidden sm:inline">{t.exportBtn}</span>
-                </button>
+                {/* Dışa Aktar Dropdown Menüsü */}
+                <div className="relative">
+                  <button 
+                    onClick={() => setShowExportMenu(!showExportMenu)}
+                    className="text-sm font-medium text-slate-600 hover:text-indigo-600 transition-colors flex items-center gap-1.5 bg-white hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 px-3 py-1.5 rounded-lg shadow-sm"
+                  >
+                    <Download size={16} />
+                    <span className="hidden sm:inline">{t.exportBtn}</span>
+                    <ChevronRight size={14} className={`transition-transform ${showExportMenu ? 'rotate-90' : ''}`} />
+                  </button>
+
+                  {showExportMenu && (
+                    <div className="absolute top-full right-0 mt-1 w-64 bg-white border border-slate-200 rounded-lg shadow-lg z-50">
+                      <div className="py-1">
+                        {/* Session Export */}
+                        <button
+                          onClick={() => {
+                            handleExport();
+                            setShowExportMenu(false);
+                          }}
+                          className="w-full px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+                        >
+                          <FileText size={16} />
+                          {t.exportSession}
+                          <span className="text-xs text-slate-400 ml-auto">JSON</span>
+                        </button>
+
+                        <hr className="my-1 border-slate-100" />
+
+                        {/* Notes Export Options */}
+                        <div className="px-3 py-1">
+                          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                            {t.exportNotes}
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={() => {
+                            exportNotes('markdown');
+                            setShowExportMenu(false);
+                          }}
+                          className="w-full px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+                        >
+                          <FileText size={16} />
+                          {t.exportNotesMarkdown}
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            exportNotes('html');
+                            setShowExportMenu(false);
+                          }}
+                          className="w-full px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+                        >
+                          <Globe size={16} />
+                          {t.exportNotesHtml}
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            exportNotes('json');
+                            setShowExportMenu(false);
+                          }}
+                          className="w-full px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+                        >
+                          <FileText size={16} />
+                          {t.exportNotesJson}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
 
                 {/* Yeni Belge Butonu */}
                 <button 
