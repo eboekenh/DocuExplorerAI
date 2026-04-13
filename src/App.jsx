@@ -1689,21 +1689,76 @@ export default function App({ isGuestMode = false }) {
             </label>
 
             {paragraphs.length > 0 && (
-              <>
-                {/* Dışa Aktar Dropdown Menüsü */}
-                <div className="relative">
-                  <button 
-                    onClick={() => setShowExportMenu(!showExportMenu)}
-                    className="text-sm font-medium text-slate-600 hover:text-indigo-600 transition-colors flex items-center gap-1.5 bg-white hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 px-3 py-1.5 rounded-lg shadow-sm"
-                  >
-                    <Download size={16} />
-                    <span className="hidden sm:inline">{t.exportBtn}</span>
-                    <ChevronRight size={14} className={`transition-transform ${showExportMenu ? 'rotate-90' : ''}`} />
-                  </button>
+              <div className="relative">
+                <button 
+                  onClick={() => setShowExportMenu(!showExportMenu)}
+                  className="text-sm font-medium text-slate-600 hover:text-indigo-600 transition-colors flex items-center gap-1.5 bg-white hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 px-3 py-1.5 rounded-lg shadow-sm"
+                >
+                  <Download size={16} />
+                  <span className="hidden sm:inline">{t.exportBtn}</span>
+                  <ChevronRight size={14} className={`transition-transform ${showExportMenu ? 'rotate-90' : ''}`} />
+                </button>
 
-                  {showExportMenu && (
-                    <div className="absolute top-full right-0 mt-1 w-64 bg-white border border-slate-200 rounded-lg shadow-lg z-50">
-                      <div className="py-1">
+                {showExportMenu && (
+                  <div className="absolute top-full right-0 mt-1 w-64 bg-white border border-slate-200 rounded-lg shadow-lg z-50">
+                    <div className="py-1">
+                      <button
+                        onClick={() => {
+                          handleExport();
+                          setShowExportMenu(false);
+                        }}
+                        className="w-full px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+                      >
+                        <FileText size={16} />
+                        {t.exportSession}
+                        <span className="text-xs text-slate-400 ml-auto">JSON</span>
+                      </button>
+                      
+                      <hr className="my-1 border-slate-100" />
+                      
+                      <div className="px-3 py-1">
+                        <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                          {t.exportNotes}
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => {
+                          exportNotes('markdown');
+                          setShowExportMenu(false);
+                        }}
+                        className="w-full px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+                      >
+                        <FileText size={16} />
+                        {t.exportNotesMarkdown}
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          exportNotes('html');
+                          setShowExportMenu(false);
+                        }}
+                        className="w-full px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+                      >
+                        <Globe size={16} />
+                        {t.exportNotesHtml}
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          exportNotes('json');
+                          setShowExportMenu(false);
+                        }}
+                        className="w-full px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+                      >
+                        <FileText size={16} />
+                        {t.exportNotesJson}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
                         {/* Session Export */}
                         <button
                           onClick={() => {
@@ -1762,8 +1817,9 @@ export default function App({ isGuestMode = false }) {
                     </div>
                   )}
                 </div>
+            )}
 
-                {/* Yeni Belge Butonu */}
+            {/* Yeni Belge Butonu */}
                 <button 
                   onClick={handleNewDocument}
                   className="text-sm font-medium text-slate-500 hover:text-red-600 transition-colors flex items-center gap-1.5 bg-slate-100 hover:bg-red-50 px-3 py-1.5 rounded-lg"
@@ -1771,7 +1827,6 @@ export default function App({ isGuestMode = false }) {
                   <Plus size={16} />
                   <span className="hidden sm:inline">{t.newDoc}</span>
                 </button>
-              </>
             )}
 
             {/* Döküman Geçmişi Butonu */}
